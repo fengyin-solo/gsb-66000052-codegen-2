@@ -10,6 +10,7 @@ import { CreateRoomModal } from './components/CreateRoomModal';
 import { getRoomsByInterviewer } from './services/interviewRoomService';
 import { ToastContainer } from './components/Toast';
 import { useToastStore } from './store/toast';
+import { buildRoomConfigPackage, downloadRoomConfigPackage } from './utils/roomConfigPackage';
 
 const mockInterviewer: User = {
   id: 'interviewer-001',
@@ -22,6 +23,7 @@ const mockInterviewer: User = {
 const InterviewerHomePage: React.FC = () => {
   const { currentUser, setCurrentUser, myRooms, setMyRooms, setCurrentRoom } = useInterviewStore();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const { info } = useToastStore();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -53,6 +55,16 @@ const InterviewerHomePage: React.FC = () => {
   const handleEnterRoom = (room: InterviewRoom) => {
     setCurrentRoom(room);
     navigate(`/room/${room.id}/interviewer`);
+  };
+
+  const handleDownloadConfig = (room: InterviewRoom) => {
+    downloadRoomConfigPackage(buildRoomConfigPackage({
+      title: room.title,
+      problemId: room.problemId,
+      language: room.language,
+      timeLimit: room.timeLimit,
+    }), room.title);
+    info(`房间「${room.title}」的配置包已下载，可在创建新房间时上传使用`);
   };
 
   const getStatusBadgeColor = (status: string) => {
@@ -214,7 +226,35 @@ const InterviewerHomePage: React.FC = () => {
                         </span>
                       </div>
                     </div>
-                    <span style={{ color: '#4caf50', fontSize: '20px' }}>→</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadConfig(room);
+                        }}
+                        title="下载该房间的配置包（标题 / 题目 / 语言 / 时限）"
+                        style={{
+                          padding: '6px 12px',
+                          background: 'transparent',
+                          border: '1px solid #444',
+                          borderRadius: '6px',
+                          color: '#888',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                          whiteSpace: 'nowrap',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = '#667eea';
+                          e.currentTarget.style.color = '#667eea';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = '#444';
+                          e.currentTarget.style.color = '#888';
+                        }}>
+                        ⬇ 配置包
+                      </button>
+                      <span style={{ color: '#4caf50', fontSize: '20px' }}>→</span>
+                    </div>
                   </div>
                   <div style={{ color: '#666', fontSize: '12px' }}>
                     创建于 {new Date(room.createdAt).toLocaleString('zh-CN')}

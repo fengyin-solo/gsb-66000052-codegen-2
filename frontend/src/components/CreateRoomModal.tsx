@@ -1,10 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createRoom } from '../services/interviewRoomService';
 import { getProblems } from '../services/problemService';
 import type { InterviewRoom, CreateRoomRequest, CreateRoomResponse, User, Problem } from '../types';
-import { DIFFICULTY_TAGS, getDifficultyTag } from '../types';
+import { DIFFICULTY_TAGS, getDifficultyTag, LANGUAGE_CONFIGS } from '../types';
 import { useInterviewStore } from '../store/interview';
 import { useToastStore } from '../store/toast';
+import {
+  buildRoomConfigPackage,
+  computeConfigPackageKey,
+  downloadRoomConfigPackage,
+  generateClientRequestId,
+  parseRoomConfigPackage,
+  DEFAULT_ROOM_LANGUAGE,
+  DEFAULT_ROOM_TIME_LIMIT,
+  MIN_ROOM_TIME_LIMIT,
+  MAX_ROOM_TIME_LIMIT,
+} from '../utils/roomConfigPackage';
+import type { RoomConfigPackage, RoomConfigFieldError } from '../utils/roomConfigPackage';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
@@ -25,10 +37,27 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
   const [problemSearch, setProblemSearch] = useState('');
   const [selectedProblem, setSelectedProblem] = useState<Problem | null>(null);
   const [showProblemList, setShowProblemList] = useState(false);
+  const [language, setLanguage] = useState(DEFAULT_ROOM_LANGUAGE);
+  const [timeLimit, setTimeLimit] = useState<number>(DEFAULT_ROOM_TIME_LIMIT);
+  const [clientRequestId, setClientRequestId] = useState<string>(() => generateClientRequestId());
+  const [appliedConfig, setAppliedConfig] = useState<RoomConfigPackage | null>(null);
+  const [configErrors, setConfigErrors] = useState<RoomConfigFieldError[] | null>(null);
+  const [configFileName, setConfigFileName] = useState('');
+  const [configParsing, setConfigParsing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (isOpen && problems.length === 0) {
-      loadProblems();
+    if (isOpen) {
+      // 每次打开都是一次新的创建会话：重置配置包状态并生成新的幂等键
+      setClientRequestId(generateClientRequestId());
+      setAppliedConfig(null);
+      setConfigErrors(null);
+      setConfigFileName('');
+      setLanguage(DEFAULT_ROOM_LANGUAGE);
+      setTimeLimit(DEFAULT_ROOM_TIME_LIMIT);
+      if (problems.length === 0) {
+        loadProblems();
+      }
     }
   }, [isOpen]);
 
@@ -64,6 +93,78 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
     setShowProblemList(false);
   };
 
+  const handleConfigFileSelected = async (file: File) => {
+    setConfigFileName(file.name);
+    setConfigParsing(true);
+    setError('');
+    try {
+      const text = await file.text();
+      // 校验题目是否存在需要题目列表，确保已加载
+      let problemList = problems;
+      if (problemList.length === 0) {
+        problemList = await getProblems();
+        setProblems(problemList);
+      }
+      const { config, errors } = parseRoomConfigPackage(text, problemList);
+      if (!config) {
+        setAppliedConfig(null);
+        setConfigErrors(errors);
+        showError(`配置包「${file.name}」校验未通过，请逐项修正后重新上传`);
+        return;
+      }
+      setConfigErrors(null);
+      setAppliedConfig(config);
+      setTitle(config.title);
+      setProblemId(config.problemId);
+      setLanguage(config.language);
+      setTimeLimit(config.timeLimit);
+      // 幂等键与配置内容绑定：同一配置包重复上传/提交不会生成重复房间
+      setClientRequestId(computeConfigPackageKey(config));
+      info('配置包导入成功，请确认面试官姓名与题目后创建房间');
+    } catch (err) {
+      console.error('Failed to read config package:', err);
+      setAppliedConfig(null);
+      setConfigErrors([{ field: 'file', label: '文件读取', message: '无法读取该文件，请确认文件可访问后重试' }]);
+    } finally {
+      setConfigParsing(false);
+    }
+  };
+
+  const handleRemoveConfig = () => {
+    setAppliedConfig(null);
+    setConfigErrors(null);
+    setConfigFileName('');
+    setLanguage(DEFAULT_ROOM_LANGUAGE);
+    setTimeLimit(DEFAULT_ROOM_TIME_LIMIT);
+    setClientRequestId(generateClientRequestId());
+  };
+
+  const handleDownloadTemplate = () => {
+    const template = buildRoomConfigPackage({
+      title: title || '前端开发工程师一面',
+      problemId: problemId || problems[0]?.id || '请填写题目标识',
+      language,
+      timeLimit,
+    });
+    downloadRoomConfigPackage(template, '模板');
+    info('配置包模板已下载，填写后可上传使用');
+  };
+
+  const resetForm = () => {
+    setTitle('');
+    setProblemId('');
+    setInterviewerName('');
+    setDifficultyFilter('all');
+    setProblemSearch('');
+    setSelectedProblem(null);
+    setAppliedConfig(null);
+    setConfigErrors(null);
+    setConfigFileName('');
+    setLanguage(DEFAULT_ROOM_LANGUAGE);
+    setTimeLimit(DEFAULT_ROOM_TIME_LIMIT);
+    setClientRequestId(generateClientRequestId());
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title || !problemId || !interviewerName) {
@@ -78,26 +179,32 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
         problemId,
         interviewerId: currentUser?.id || 'interviewer-001',
         interviewerName,
+        language,
+        timeLimit,
+        clientRequestId,
       };
       const result: CreateRoomResponse = await createRoom(requestData);
       const user: User = {
-        id: result.participant.userId,
-        name: result.participant.userName,
+        id: result.participant?.userId || currentUser?.id || 'interviewer-001',
+        name: result.participant?.userName || interviewerName,
         email: '',
-        role: result.participant.userRole,
+        role: result.participant?.userRole || 'INTERVIEWER',
         createdAt: new Date().toISOString(),
       };
       setCurrentUser(user);
-      setMyRooms([result.room, ...myRooms]);
-      success(`面试房间「${title}」创建成功！房间码：${result.room.roomCode}`);
+      if (result.duplicated) {
+        // 重复上传同一配置包：后端返回已创建的房间，不生成重复房间
+        if (!myRooms.some(r => r.id === result.room.id)) {
+          setMyRooms([result.room, ...myRooms]);
+        }
+        info(`该配置包已创建过房间，已为您打开已有房间（房间码：${result.room.roomCode}）`);
+      } else {
+        setMyRooms([result.room, ...myRooms]);
+        success(`面试房间「${title}」创建成功！房间码：${result.room.roomCode}`);
+      }
       onSuccess(result.room);
       onClose();
-      setTitle('');
-      setProblemId('');
-      setInterviewerName('');
-      setDifficultyFilter('all');
-      setProblemSearch('');
-      setSelectedProblem(null);
+      resetForm();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '创建房间失败';
       setError(errorMessage);
@@ -130,6 +237,152 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
 
         <form onSubmit={handleSubmit} style={{ flex: 1, overflowY: 'auto' }}>
           <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ color: '#ccc', fontSize: '14px' }}>配置包（可选）</label>
+                <button
+                  type="button"
+                  onClick={handleDownloadTemplate}
+                  style={{ background: 'transparent', border: 'none', color: '#667eea', fontSize: '12px', cursor: 'pointer', padding: 0 }}
+                >
+                  ⬇ 下载配置包模板
+                </button>
+              </div>
+
+              {!appliedConfig && (
+                <div
+                  onClick={() => !configParsing && fileInputRef.current?.click()}
+                  style={{
+                    border: '1px dashed #555',
+                    borderRadius: '6px',
+                    padding: '16px',
+                    textAlign: 'center',
+                    cursor: configParsing ? 'wait' : 'pointer',
+                    background: '#252525',
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.borderColor = '#667eea'}
+                  onMouseLeave={(e) => e.currentTarget.style.borderColor = '#555'}
+                >
+                  <div style={{ color: '#ccc', fontSize: '14px' }}>
+                    {configParsing ? '正在解析配置包...' : '📦 点击上传配置包（.json）'}
+                  </div>
+                  <div style={{ color: '#666', fontSize: '12px', marginTop: '4px' }}>
+                    上传后将逐项校验并预览，确认姓名与题目后再创建房间
+                  </div>
+                </div>
+              )}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    handleConfigFileSelected(file);
+                  }
+                  // 允许修正后选择同一文件重新上传
+                  e.target.value = '';
+                }}
+              />
+
+              {configErrors && configErrors.length > 0 && (
+                <div style={{
+                  marginTop: '10px',
+                  padding: '12px 14px',
+                  background: 'rgba(244, 67, 54, 0.08)',
+                  border: '1px solid rgba(244, 67, 54, 0.4)',
+                  borderRadius: '6px',
+                }}>
+                  <div style={{ color: '#f44336', fontSize: '13px', fontWeight: 500, marginBottom: '8px' }}>
+                    配置包「{configFileName}」校验未通过，请修正以下 {configErrors.length} 项后重新上传：
+                  </div>
+                  {configErrors.map((item, idx) => (
+                    <div key={idx} style={{ display: 'flex', gap: '8px', color: '#ef9a9a', fontSize: '12px', lineHeight: 1.8 }}>
+                      <span style={{ flexShrink: 0 }}>✗</span>
+                      <span><span style={{ fontWeight: 600 }}>{item.label}</span>：{item.message}</span>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      marginTop: '10px',
+                      padding: '6px 16px',
+                      borderRadius: '4px',
+                      border: '1px solid #f44336',
+                      background: 'transparent',
+                      color: '#f44336',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                    }}
+                  >
+                    修正后重新上传
+                  </button>
+                </div>
+              )}
+
+              {appliedConfig && (
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'rgba(102, 126, 234, 0.08)',
+                  border: '1px solid rgba(102, 126, 234, 0.4)',
+                  borderRadius: '6px',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <span style={{ color: '#667eea', fontSize: '13px', fontWeight: 500 }}>
+                      ✓ 已导入配置包「{configFileName}」
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleRemoveConfig}
+                      title="移除配置包，恢复手动填写"
+                      style={{ background: 'transparent', border: 'none', color: '#888', fontSize: '14px', cursor: 'pointer', padding: '0 4px' }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', fontSize: '12px' }}>
+                    <div>
+                      <div style={{ color: '#888', marginBottom: '2px' }}>房间标题</div>
+                      <div style={{ color: '#fff' }}>{appliedConfig.title}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888', marginBottom: '2px' }}>面试题目</div>
+                      <div style={{ color: '#fff' }}>{selectedProblem?.title || appliedConfig.problemId}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888', marginBottom: '2px' }}>编程语言</div>
+                      <select
+                        value={language}
+                        onChange={e => setLanguage(e.target.value)}
+                        style={{ ...inputStyle, padding: '6px 8px', fontSize: '12px' }}
+                      >
+                        {LANGUAGE_CONFIGS.map(l => (
+                          <option key={l.value} value={l.value}>{l.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888', marginBottom: '2px' }}>面试时限（分钟）</div>
+                      <input
+                        type="number"
+                        min={MIN_ROOM_TIME_LIMIT}
+                        max={MAX_ROOM_TIME_LIMIT}
+                        value={timeLimit}
+                        onChange={e => setTimeLimit(Number(e.target.value) || DEFAULT_ROOM_TIME_LIMIT)}
+                        style={{ ...inputStyle, padding: '6px 8px', fontSize: '12px' }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ color: '#888', fontSize: '12px', marginTop: '10px' }}>
+                    已按配置包预填内容，请确认面试官姓名与面试题目后点击「创建房间」
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div>
               <label style={{ display: 'block', color: '#ccc', marginBottom: '6px', fontSize: '14px' }}>房间标题 *</label>
               <input

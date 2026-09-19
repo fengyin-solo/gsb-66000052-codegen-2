@@ -49,12 +49,41 @@ public class InterviewRoomController {
         String problemId = request.get("problemId");
         String interviewerId = request.get("interviewerId");
         String interviewerName = request.get("interviewerName");
+        String language = request.get("language");
+        String clientRequestId = request.get("clientRequestId");
+        Integer timeLimit = parseTimeLimit(request.get("timeLimit"));
+
+        // 幂等保护：同一面试官携带相同 clientRequestId 重复提交（如重复上传配置包后重复创建）时，
+        // 直接返回已创建的房间，不生成重复房间。
+        if (clientRequestId != null && !clientRequestId.trim().isEmpty() && interviewerId != null) {
+            Optional<InterviewRoom> existingRoom = interviewRoomRepository
+                    .findFirstByInterviewerIdAndClientRequestId(interviewerId, clientRequestId.trim());
+            if (existingRoom.isPresent()) {
+                InterviewRoom room = existingRoom.get();
+                ParticipantStatus interviewerStatus = participantStatusRepository
+                        .findByRoomIdAndUserId(room.getId(), interviewerId)
+                        .orElseGet(() -> participantStatusRepository.findByRoomId(room.getId()).stream()
+                                .filter(p -> "INTERVIEWER".equals(p.getUserRole()))
+                                .findFirst()
+                                .orElse(null));
+                return new ResponseEntity<>(new CreateRoomResponse(room, interviewerStatus, true), HttpStatus.OK);
+            }
+        }
 
         InterviewRoom room = new InterviewRoom();
         room.setTitle(title);
         room.setProblemId(problemId);
         room.setInterviewerId(interviewerId);
         room.setStatus("WAITING");
+        if (language != null && !language.trim().isEmpty()) {
+            room.setLanguage(language.trim());
+        }
+        if (timeLimit != null) {
+            room.setTimeLimit(timeLimit);
+        }
+        if (clientRequestId != null && !clientRequestId.trim().isEmpty()) {
+            room.setClientRequestId(clientRequestId.trim());
+        }
         room.setRoomCode(generateUniqueRoomCode());
         room.setCreatedAt(LocalDateTime.now());
 
@@ -214,6 +243,18 @@ public class InterviewRoomController {
                 new WebSocketMessage<>("PARTICIPANTS_UPDATE", participants));
 
         return new ResponseEntity<>(updatedStatus, HttpStatus.OK);
+    }
+
+    private Integer parseTimeLimit(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value > 0 ? value : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private String generateUniqueRoomCode() {

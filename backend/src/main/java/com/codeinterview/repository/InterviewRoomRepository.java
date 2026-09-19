@@ -11,5 +11,6 @@ import java.util.Optional;
 public interface InterviewRoomRepository extends JpaRepository<InterviewRoom, String> {
     Optional<InterviewRoom> findByRoomCode(String roomCode);
     List<InterviewRoom> findByInterviewerIdOrderByCreatedAtDesc(String interviewerId);
+    Optional<InterviewRoom> findFirstByInterviewerIdAndClientRequestId(String interviewerId, String clientRequestId);
     boolean existsByRoomCode(String roomCode);
 }

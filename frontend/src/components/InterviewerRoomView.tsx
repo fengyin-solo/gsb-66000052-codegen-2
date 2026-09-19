@@ -10,6 +10,8 @@ import { ParticipantStatus, getRoomStatusConfig, formatDuration, formatTime } fr
 import { getRoomById, updateRoomStatus, getRoomParticipants, heartbeat } from '../services/interviewRoomService';
 import { connect, disconnect, subscribeParticipants, subscribeRoomStatus, sendHeartbeat } from '../services/websocketService';
 import { getProblemById } from '../services/problemService';
+import { buildRoomConfigPackage, downloadRoomConfigPackage } from '../utils/roomConfigPackage';
+import { useToastStore } from '../store/toast';
 
 export const InterviewerRoomView: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -30,6 +32,7 @@ export const InterviewerRoomView: React.FC = () => {
   const [showInvitePanel, setShowInvitePanel] = useState(true);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  const { info } = useToastStore();
   const [duration, setDuration] = useState<string>('');
   const [localStatusNotification, setLocalStatusNotification] = useState<StatusChangeNotification | null>(null);
   const httpHeartbeatRef = useRef<number | null>(null);
@@ -217,6 +220,17 @@ export const InterviewerRoomView: React.FC = () => {
   const handleBack = () => {
     resetRoom();
     navigate('/');
+  };
+
+  const handleDownloadConfig = () => {
+    if (!currentRoom) return;
+    downloadRoomConfigPackage(buildRoomConfigPackage({
+      title: currentRoom.title,
+      problemId: currentRoom.problemId,
+      language: currentRoom.language,
+      timeLimit: currentRoom.timeLimit,
+    }), currentRoom.title);
+    info('房间配置包已下载，可在创建新房间时上传使用');
   };
 
   if (loading) {
@@ -448,6 +462,22 @@ export const InterviewerRoomView: React.FC = () => {
           onMouseLeave={(e) => !showInvitePanel && (e.currentTarget.style.background = 'transparent')}>
           👥
         </button>
+        <button
+          onClick={handleDownloadConfig}
+          title="下载房间配置包（标题 / 题目 / 语言 / 时限）"
+          style={{
+            width: '40px', height: '40px',
+            background: 'transparent',
+            border: 'none',
+            color: '#fff',
+            cursor: 'pointer',
+            fontSize: '18px',
+            borderRadius: '8px',
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.background = '#333'}
+          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}>
+          📦
+        </button>
       </div>
 
       {showInvitePanel && (
@@ -508,6 +538,11 @@ export const InterviewerRoomView: React.FC = () => {
             {currentRoom.startedAt && (
               <div style={{ fontSize: '11px', color: '#666' }}>
                 开始于 {formatTime(currentRoom.startedAt)}
+              </div>
+            )}
+            {currentRoom.timeLimit && (
+              <div style={{ fontSize: '11px', color: '#666' }}>
+                时限 {currentRoom.timeLimit} 分钟
               </div>
             )}
           </div>

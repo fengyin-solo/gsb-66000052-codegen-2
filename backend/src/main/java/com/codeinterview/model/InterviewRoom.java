@@ -14,6 +14,9 @@ public class InterviewRoom {
     private String problemId;
     private String interviewerId;
     private String status;
+    private String language = "javascript";
+    private Integer timeLimit = 60;
+    private String clientRequestId;
     private LocalDateTime startedAt;
     private LocalDateTime endedAt;
     private LocalDateTime createdAt = LocalDateTime.now();
@@ -30,6 +33,12 @@ public class InterviewRoom {
     public void setInterviewerId(String interviewerId) { this.interviewerId = interviewerId; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public String getLanguage() { return language; }
+    public void setLanguage(String language) { this.language = language; }
+    public Integer getTimeLimit() { return timeLimit; }
+    public void setTimeLimit(Integer timeLimit) { this.timeLimit = timeLimit; }
+    public String getClientRequestId() { return clientRequestId; }
+    public void setClientRequestId(String clientRequestId) { this.clientRequestId = clientRequestId; }
     public LocalDateTime getStartedAt() { return startedAt; }
     public void setStartedAt(LocalDateTime startedAt) { this.startedAt = startedAt; }
     public LocalDateTime getEndedAt() { return endedAt; }
