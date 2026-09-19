@@ -9,6 +9,7 @@ import com.codeinterview.model.ParticipantStatus;
 import com.codeinterview.repository.CandidateInvitationRepository;
 import com.codeinterview.repository.InterviewRoomRepository;
 import com.codeinterview.repository.ParticipantStatusRepository;
+import com.codeinterview.repository.ProblemRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.http.HttpStatus;
@@ -37,10 +38,15 @@ public class InterviewRoomController {
     private ParticipantStatusRepository participantStatusRepository;
 
     @Autowired
+    private ProblemRepository problemRepository;
+
+    @Autowired
     private SimpMessagingTemplate messagingTemplate;
 
     private static final String ROOM_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     private static final int ROOM_CODE_LENGTH = 6;
+    private static final String DEFAULT_ROOM_LANGUAGE = "javascript";
+    private static final int DEFAULT_ROOM_TIME_LIMIT_MINUTES = 60;
 
     @PostMapping
     @Transactional
@@ -49,11 +55,46 @@ public class InterviewRoomController {
         String problemId = request.get("problemId");
         String interviewerId = request.get("interviewerId");
         String interviewerName = request.get("interviewerName");
+        String language = request.get("language");
+        String timeLimitValue = request.get("timeLimit");
+        String configPackageId = request.get("configPackageId");
+
+        // 幂等：同一面试官重复上传同一配置包时，返回已创建的房间，不生成重复房间
+        if (configPackageId != null && !configPackageId.trim().isEmpty()) {
+            List<InterviewRoom> existingRooms = interviewRoomRepository
+                    .findByInterviewerIdAndConfigPackageId(interviewerId, configPackageId.trim());
+            if (!existingRooms.isEmpty()) {
+                InterviewRoom existingRoom = existingRooms.get(0);
+                ParticipantStatus existingInterviewerStatus = participantStatusRepository
+                        .findByRoomIdAndUserId(existingRoom.getId(), existingRoom.getInterviewerId())
+                        .orElseGet(() -> {
+                            ParticipantStatus status = new ParticipantStatus();
+                            status.setRoomId(existingRoom.getId());
+                            status.setUserId(existingRoom.getInterviewerId());
+                            status.setUserName(interviewerName);
+                            status.setUserRole("INTERVIEWER");
+                            return status;
+                        });
+                CreateRoomResponse duplicatedResponse = new CreateRoomResponse(existingRoom, existingInterviewerStatus);
+                duplicatedResponse.setDuplicated(true);
+                return new ResponseEntity<>(duplicatedResponse, HttpStatus.OK);
+            }
+        }
+
+        // 配置包中的题目必须真实存在，否则拒绝创建
+        if (problemId == null || problemId.trim().isEmpty() || !problemRepository.existsById(problemId)) {
+            return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+        }
 
         InterviewRoom room = new InterviewRoom();
         room.setTitle(title);
         room.setProblemId(problemId);
         room.setInterviewerId(interviewerId);
+        room.setLanguage(language == null || language.trim().isEmpty() ? DEFAULT_ROOM_LANGUAGE : language.trim());
+        room.setTimeLimit(parseTimeLimitMinutes(timeLimitValue));
+        if (configPackageId != null && !configPackageId.trim().isEmpty()) {
+            room.setConfigPackageId(configPackageId.trim());
+        }
         room.setStatus("WAITING");
         room.setRoomCode(generateUniqueRoomCode());
         room.setCreatedAt(LocalDateTime.now());
@@ -214,6 +255,18 @@ public class InterviewRoomController {
                 new WebSocketMessage<>("PARTICIPANTS_UPDATE", participants));
 
         return new ResponseEntity<>(updatedStatus, HttpStatus.OK);
+    }
+
+    private int parseTimeLimitMinutes(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return DEFAULT_ROOM_TIME_LIMIT_MINUTES;
+        }
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed > 0 ? parsed : DEFAULT_ROOM_TIME_LIMIT_MINUTES;
+        } catch (NumberFormatException e) {
+            return DEFAULT_ROOM_TIME_LIMIT_MINUTES;
+        }
     }
 
     private String generateUniqueRoomCode() {

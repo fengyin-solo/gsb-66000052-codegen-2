@@ -47,6 +47,31 @@ const generateRoomCode = (): string => {
 export async function mockCreateRoom(data: CreateRoomRequest): Promise<CreateRoomResponse> {
   await delay(500);
   const rooms = getRoomsCache();
+
+  // 幂等：同一面试官重复上传同一配置包时，返回已创建的房间，不生成重复房间
+  if (data.configPackageId) {
+    const existing = rooms.find(
+      r => r.configPackageId === data.configPackageId && r.interviewerId === data.interviewerId
+    );
+    if (existing) {
+      const now = new Date().toISOString();
+      return {
+        room: { ...existing },
+        participant: {
+          id: 'participant-interviewer-' + existing.interviewerId,
+          roomId: existing.id,
+          userId: existing.interviewerId,
+          userName: data.interviewerName,
+          userRole: 'INTERVIEWER',
+          isOnline: true,
+          lastHeartbeat: now,
+          joinedAt: existing.createdAt,
+        },
+        duplicated: true,
+      };
+    }
+  }
+
   const roomId = 'room-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
   const roomCode = generateRoomCode();
   const now = new Date().toISOString();
@@ -61,7 +86,9 @@ export async function mockCreateRoom(data: CreateRoomRequest): Promise<CreateRoo
     status: 'WAITING',
     createdAt: now,
     code: '',
-    language: 'javascript',
+    language: data.language || 'javascript',
+    timeLimit: data.timeLimit ?? 60,
+    configPackageId: data.configPackageId,
     chatMessages: [],
   };
 

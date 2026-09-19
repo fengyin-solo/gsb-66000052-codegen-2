@@ -6,6 +6,7 @@ import com.codeinterview.model.ParticipantStatus;
 public class CreateRoomResponse {
     private InterviewRoom room;
     private ParticipantStatus participant;
+    private boolean duplicated;
 
     public CreateRoomResponse() {
     }
@@ -29,5 +30,13 @@ public class CreateRoomResponse {
 
     public void setParticipant(ParticipantStatus participant) {
         this.participant = participant;
+    }
+
+    public boolean isDuplicated() {
+        return duplicated;
+    }
+
+    public void setDuplicated(boolean duplicated) {
+        this.duplicated = duplicated;
     }
 }

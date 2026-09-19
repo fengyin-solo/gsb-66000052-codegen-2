@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createRoom } from '../services/interviewRoomService';
 import { getProblems } from '../services/problemService';
-import type { InterviewRoom, CreateRoomRequest, CreateRoomResponse, User, Problem } from '../types';
-import { DIFFICULTY_TAGS, getDifficultyTag } from '../types';
+import type { InterviewRoom, CreateRoomRequest, CreateRoomResponse, User, Problem, RoomConfigPackage } from '../types';
+import { DIFFICULTY_TAGS, getDifficultyTag, getLanguageConfig } from '../types';
+import { validateRoomConfigPackage, CONFIG_PACKAGE_FIELD_LABELS } from '../utils/roomConfigPackage';
+import type { ConfigPackageError } from '../utils/roomConfigPackage';
 import { useInterviewStore } from '../store/interview';
 import { useToastStore } from '../store/toast';
 
@@ -25,6 +27,10 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
   const [problemSearch, setProblemSearch] = useState('');
   const [selectedProblem, setSelectedProblem] = useState<Problem | null>(null);
   const [showProblemList, setShowProblemList] = useState(false);
+  const [configPackage, setConfigPackage] = useState<RoomConfigPackage | null>(null);
+  const [configErrors, setConfigErrors] = useState<ConfigPackageError[]>([]);
+  const [configFileName, setConfigFileName] = useState('');
+  const configFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (isOpen && problems.length === 0) {
@@ -64,6 +70,53 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
     setShowProblemList(false);
   };
 
+  const handleConfigFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 允许修正后选择同一个文件重新上传
+    e.target.value = '';
+    if (!file) return;
+    setConfigFileName(file.name);
+    setError('');
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        setConfigPackage(null);
+        setConfigErrors([{ field: 'file', message: '文件格式错误：不是有效的 JSON 文件' }]);
+        showError('配置包解析失败：不是有效的 JSON 文件');
+        return;
+      }
+      const result = validateRoomConfigPackage(parsed, problems);
+      if (result.errors.length > 0) {
+        // 校验未通过：配置包不生效，但把合法字段预填进表单，便于手动修正
+        setConfigPackage(null);
+        setConfigErrors(result.errors);
+        if (result.partial.title) setTitle(result.partial.title);
+        if (result.partial.problemId) setProblemId(result.partial.problemId);
+        showError(`配置包校验未通过，发现 ${result.errors.length} 处问题，请修正后重新上传`);
+        return;
+      }
+      const pkg = result.config!;
+      setConfigPackage(pkg);
+      setConfigErrors([]);
+      setTitle(pkg.title);
+      setProblemId(pkg.problemId);
+      success('配置包上传成功，请确认面试官姓名与题目后创建房间');
+    } catch {
+      setConfigPackage(null);
+      setConfigErrors([{ field: 'file', message: '文件读取失败，请重试' }]);
+      showError('配置包读取失败，请重试');
+    }
+  };
+
+  const handleRemoveConfigPackage = () => {
+    setConfigPackage(null);
+    setConfigErrors([]);
+    setConfigFileName('');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title || !problemId || !interviewerName) {
@@ -79,6 +132,11 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
         interviewerId: currentUser?.id || 'interviewer-001',
         interviewerName,
       };
+      if (configPackage) {
+        requestData.language = configPackage.language;
+        requestData.timeLimit = configPackage.timeLimit;
+        requestData.configPackageId = configPackage.packageId;
+      }
       const result: CreateRoomResponse = await createRoom(requestData);
       const user: User = {
         id: result.participant.userId,
@@ -88,8 +146,16 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
         createdAt: new Date().toISOString(),
       };
       setCurrentUser(user);
-      setMyRooms([result.room, ...myRooms]);
-      success(`面试房间「${title}」创建成功！房间码：${result.room.roomCode}`);
+      if (result.duplicated) {
+        // 同一配置包重复上传：后端返回已有房间，列表不重复添加
+        if (!myRooms.some(r => r.id === result.room.id)) {
+          setMyRooms([result.room, ...myRooms]);
+        }
+        info(`配置包已创建过房间「${result.room.title}」，已为你打开已有房间，未重复创建`);
+      } else {
+        setMyRooms([result.room, ...myRooms]);
+        success(`面试房间「${title}」创建成功！房间码：${result.room.roomCode}`);
+      }
       onSuccess(result.room);
       onClose();
       setTitle('');
@@ -98,6 +164,9 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
       setDifficultyFilter('all');
       setProblemSearch('');
       setSelectedProblem(null);
+      setConfigPackage(null);
+      setConfigErrors([]);
+      setConfigFileName('');
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '创建房间失败';
       setError(errorMessage);
@@ -130,6 +199,142 @@ export const CreateRoomModal: React.FC<CreateRoomModalProps> = ({ isOpen, onClos
 
         <form onSubmit={handleSubmit} style={{ flex: 1, overflowY: 'auto' }}>
           <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ color: '#ccc', fontSize: '14px' }}>配置包（可选）</label>
+                {configPackage && (
+                  <span style={{ color: '#4caf50', fontSize: '12px' }}>✓ 已加载配置包</span>
+                )}
+              </div>
+              <input
+                ref={configFileInputRef}
+                type="file"
+                accept=".json,application/json"
+                style={{ display: 'none' }}
+                onChange={handleConfigFileChange}
+              />
+
+              {!configPackage && configErrors.length === 0 && (
+                <div
+                  onClick={() => { if (!problemsLoading) configFileInputRef.current?.click(); }}
+                  style={{
+                    padding: '16px',
+                    border: '1px dashed #555',
+                    borderRadius: '6px',
+                    textAlign: 'center',
+                    cursor: problemsLoading ? 'not-allowed' : 'pointer',
+                    opacity: problemsLoading ? 0.5 : 1,
+                    background: '#252525',
+                  }}
+                >
+                  <div style={{ color: '#ccc', fontSize: '14px', marginBottom: '4px' }}>
+                    📦 {problemsLoading ? '题目加载中，暂不能上传…' : '点击上传配置包（.json）'}
+                  </div>
+                  <div style={{ color: '#666', fontSize: '12px' }}>
+                    上传后自动填充房间标题、题目、语言与时限；不上传可手动填写
+                  </div>
+                </div>
+              )}
+
+              {configErrors.length > 0 && (
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'rgba(244, 67, 54, 0.08)',
+                  border: '1px solid rgba(244, 67, 54, 0.4)',
+                  borderRadius: '6px',
+                }}>
+                  <div style={{ color: '#f44336', fontSize: '14px', fontWeight: 500, marginBottom: '8px' }}>
+                    ⚠ 配置包校验未通过{configFileName ? `（${configFileName}）` : ''}，请逐项修正：
+                  </div>
+                  <ul style={{ margin: '0 0 12px 0', paddingLeft: '4px', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {configErrors.map((err, idx) => (
+                      <li key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '13px' }}>
+                        <span style={{
+                          flexShrink: 0,
+                          padding: '1px 8px',
+                          borderRadius: '8px',
+                          background: 'rgba(244, 67, 54, 0.15)',
+                          color: '#f44336',
+                          fontSize: '11px',
+                          marginTop: '1px',
+                        }}>
+                          {CONFIG_PACKAGE_FIELD_LABELS[err.field]}
+                        </span>
+                        <span style={{ color: '#e0a39e' }}>{err.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={() => configFileInputRef.current?.click()}
+                      style={{ padding: '6px 14px', borderRadius: '4px', border: 'none', background: '#f44336', color: '#fff', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      修正后重新上传
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRemoveConfigPackage}
+                      style={{ padding: '6px 14px', borderRadius: '4px', border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      清除
+                    </button>
+                    <span style={{ color: '#888', fontSize: '12px' }}>也可以直接在下方手动填写</span>
+                  </div>
+                </div>
+              )}
+
+              {configPackage && (
+                <div style={{
+                  padding: '14px 16px',
+                  background: 'rgba(76, 175, 80, 0.08)',
+                  border: '1px solid rgba(76, 175, 80, 0.35)',
+                  borderRadius: '6px',
+                }}>
+                  <div style={{ color: '#4caf50', fontSize: '14px', fontWeight: 500, marginBottom: '10px' }}>
+                    📦 配置包预览{configFileName ? `（${configFileName}）` : ''}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '13px' }}>
+                      <span style={{ color: '#888' }}>房间标题：</span>
+                      <span style={{ color: '#fff' }}>{configPackage.title}</span>
+                    </div>
+                    <div style={{ fontSize: '13px' }}>
+                      <span style={{ color: '#888' }}>编程语言：</span>
+                      <span style={{ color: '#fff' }}>{getLanguageConfig(configPackage.language).label}</span>
+                    </div>
+                    <div style={{ fontSize: '13px' }}>
+                      <span style={{ color: '#888' }}>面试时限：</span>
+                      <span style={{ color: '#fff' }}>{configPackage.timeLimit} 分钟</span>
+                    </div>
+                    <div style={{ fontSize: '13px' }}>
+                      <span style={{ color: '#888' }}>题目标识：</span>
+                      <span style={{ color: '#9cdcfe', fontFamily: 'monospace', fontSize: '12px' }}>{configPackage.problemId}</span>
+                    </div>
+                  </div>
+                  <div style={{ color: '#888', fontSize: '12px', marginBottom: '10px' }}>
+                    请确认面试官姓名与题目选择后创建房间；重复上传同一配置包不会重复创建房间
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => configFileInputRef.current?.click()}
+                      style={{ padding: '6px 14px', borderRadius: '4px', border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      重新上传
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRemoveConfigPackage}
+                      style={{ padding: '6px 14px', borderRadius: '4px', border: '1px solid #555', background: 'transparent', color: '#ccc', cursor: 'pointer', fontSize: '12px' }}
+                    >
+                      移除配置包
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div>
               <label style={{ display: 'block', color: '#ccc', marginBottom: '6px', fontSize: '14px' }}>房间标题 *</label>
               <input

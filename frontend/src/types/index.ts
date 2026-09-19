@@ -92,7 +92,20 @@ export interface InterviewRoom {
   startedAt?: string;
   code: string;
   language: string;
+  timeLimit?: number;
+  configPackageId?: string;
   chatMessages: ChatMessage[];
+}
+
+export interface RoomConfigPackage {
+  type: string;
+  version: number;
+  packageId: string;
+  exportedAt: string;
+  title: string;
+  problemId: string;
+  language: string;
+  timeLimit: number;
 }
 
 export interface ChatMessage {
@@ -110,6 +123,9 @@ export interface CreateRoomRequest {
   problemId: string;
   interviewerId: string;
   interviewerName: string;
+  language?: string;
+  timeLimit?: number;
+  configPackageId?: string;
 }
 
 export interface InviteCandidateRequest {
@@ -121,6 +137,7 @@ export interface InviteCandidateRequest {
 export interface CreateRoomResponse {
   room: InterviewRoom;
   participant: ParticipantStatus;
+  duplicated?: boolean;
 }
 
 export interface LanguageConfig {
